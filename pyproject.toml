@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-cursor-bridge"
+version = "0.1.0"
+description = "Bridge Telegram Bot messages to Cursor Agent CLI"
+requires-python = ">=3.9"
+
+[project.scripts]
+tcb = "telegram_cursor_bridge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["telegram_cursor_bridge*"]

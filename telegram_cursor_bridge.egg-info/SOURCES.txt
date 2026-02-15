@@ -1,0 +1,11 @@
+pyproject.toml
+telegram_cursor_bridge/__init__.py
+telegram_cursor_bridge/bridge.py
+telegram_cursor_bridge/cli.py
+telegram_cursor_bridge/config.py
+telegram_cursor_bridge/daemon.py
+telegram_cursor_bridge.egg-info/PKG-INFO
+telegram_cursor_bridge.egg-info/SOURCES.txt
+telegram_cursor_bridge.egg-info/dependency_links.txt
+telegram_cursor_bridge.egg-info/entry_points.txt
+telegram_cursor_bridge.egg-info/top_level.txt

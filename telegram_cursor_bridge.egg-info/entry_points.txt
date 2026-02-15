@@ -1,0 +1,2 @@
+[console_scripts]
+tcb = telegram_cursor_bridge.cli:main
