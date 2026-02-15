@@ -37,3 +37,13 @@
 - PID file: `~/telegrambot/daemon.pid`
 - Log file: `~/telegrambot/daemon.log`
 - Offset tracking: `~/telegrambot/.offset`
+- Session tracking: `~/telegrambot/sessions.json`
+
+## Session Management
+- Per-chat workspace + session_id stored in sessions.json
+- Cursor agent `--output-format json` returns `session_id`
+- Subsequent messages use `--resume <session_id>` for conversation continuity
+- `/project <path>` switches workspace and resets session
+- `/new` resets session in current workspace
+- `/ls` shows current workspace + session
+- `/history` lists all workspaces used

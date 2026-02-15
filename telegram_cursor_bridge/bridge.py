@@ -4,12 +4,15 @@ import os
 import subprocess
 import time
 
-from .config import load_config, load_offset, save_offset
+from .config import (
+    load_config, load_offset, save_offset,
+    get_chat_session, set_chat_workspace, set_chat_session_id, clear_chat_session,
+)
 
 logger = logging.getLogger("telegram-cursor-bridge")
 
 
-# ── Telegram API via curl (reliable SOCKS5 support) ──
+# ── Telegram API via curl ──
 
 
 def tg_api(token, method, params=None, proxy=""):
@@ -32,11 +35,9 @@ def tg_api(token, method, params=None, proxy=""):
 
 
 def _parse_proxy(proxy_url):
-    """Extract host:port from socks5h://host:port format."""
     if not proxy_url:
         return ""
-    proxy_url = proxy_url.replace("socks5h://", "").replace("socks5://", "")
-    return proxy_url
+    return proxy_url.replace("socks5h://", "").replace("socks5://", "")
 
 
 def get_updates(token, offset, proxy=""):
@@ -49,19 +50,23 @@ def send_message(token, chat_id, text, proxy=""):
         tg_api(token, "sendMessage", {"chat_id": chat_id, "text": chunk}, proxy)
 
 
-# ── Cursor CLI helper ──
+# ── Cursor CLI ──
 
 
-def run_cursor(prompt, model, working_dir, api_key=""):
+def run_cursor(prompt, model, working_dir, api_key="", session_id=""):
     cmd = [
         "agent",
         "-p", "-f", "--trust",
         "--model", model,
-        "--output-format", "text",
+        "--output-format", "json",
     ]
+    if session_id:
+        cmd += ["--resume", session_id]
     if api_key:
         cmd += ["--api-key", api_key]
-    logger.info("Running cursor agent (model=%s) ...", model)
+
+    logger.info("Running cursor agent (model=%s, workspace=%s, session=%s) ...",
+                model, working_dir, session_id[:8] if session_id else "new")
     env = dict(os.environ)
     env["PATH"] = os.environ.get("PATH", "") + ":/Users/beining/.local/bin"
     if api_key:
@@ -76,16 +81,94 @@ def run_cursor(prompt, model, working_dir, api_key=""):
             cwd=working_dir,
             env=env,
         )
-        output = result.stdout.strip()
-        if result.returncode != 0 and result.stderr:
-            output += f"\n\n[stderr]: {result.stderr.strip()}"
-        return output if output else "(empty response from cursor)"
+        stdout = result.stdout.strip()
+        if not stdout:
+            stderr = result.stderr.strip() if result.stderr else ""
+            return {"text": f"(empty response, rc={result.returncode})\n{stderr}", "session_id": session_id}
+
+        # parse JSON result
+        try:
+            data = json.loads(stdout)
+            text = data.get("result", stdout)
+            new_session = data.get("session_id", session_id)
+            return {"text": text, "session_id": new_session}
+        except json.JSONDecodeError:
+            return {"text": stdout, "session_id": session_id}
+
     except subprocess.TimeoutExpired:
-        return "(cursor timed out after 300s)"
+        return {"text": "(cursor timed out after 300s)", "session_id": session_id}
     except FileNotFoundError:
-        return "(cursor agent CLI not found – run: curl https://cursor.com/install -fsSS | bash)"
+        return {"text": "(cursor agent CLI not found)", "session_id": session_id}
     except Exception as e:
-        return f"(cursor error: {e})"
+        return {"text": f"(cursor error: {e})", "session_id": session_id}
+
+
+# ── Bot commands ──
+
+HELP_TEXT = """Available commands:
+/project <path> - switch workspace
+/new - start new session in current workspace
+/ls - show current workspace & session
+/history - list all workspaces you've used
+/help - show this message
+
+Any other text is sent to Cursor Agent."""
+
+
+def handle_command(text, chat_id, token, proxy, model, api_key, default_workspace):
+    session = get_chat_session(chat_id)
+    workspace = session.get("workspace", default_workspace)
+    session_id = session.get("session_id", "")
+
+    if text == "/help" or text == "/start":
+        send_message(token, chat_id, HELP_TEXT, proxy)
+        return
+
+    if text.startswith("/project"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            send_message(token, chat_id, f"Usage: /project <path>\nCurrent: {workspace}", proxy)
+            return
+        path = os.path.expanduser(parts[1].strip())
+        if not os.path.isdir(path):
+            os.makedirs(path, exist_ok=True)
+            send_message(token, chat_id, f"Created: {path}", proxy)
+        set_chat_workspace(chat_id, path)
+        send_message(token, chat_id, f"Workspace: {path}\nSession reset. Send a message to begin.", proxy)
+        return
+
+    if text == "/new":
+        clear_chat_session(chat_id)
+        send_message(token, chat_id, f"New session started.\nWorkspace: {workspace}", proxy)
+        return
+
+    if text == "/ls":
+        info = f"Workspace: {workspace}\nSession: {session_id[:12] + '...' if session_id else '(none)'}\nModel: {model}"
+        send_message(token, chat_id, info, proxy)
+        return
+
+    if text == "/history":
+        history = session.get("history", [])
+        if not history:
+            send_message(token, chat_id, "No workspace history.", proxy)
+            return
+        lines = [f"{i+1}. {h['path']}  ({h['ts']})" for i, h in enumerate(history)]
+        send_message(token, chat_id, "Workspace history:\n" + "\n".join(lines), proxy)
+        return
+
+    # Regular prompt → forward to cursor agent
+    send_message(token, chat_id, "⏳ Processing...", proxy)
+
+    result = run_cursor(text, model, workspace, api_key, session_id)
+    reply = result["text"]
+    new_session_id = result.get("session_id", "")
+
+    if new_session_id and new_session_id != session_id:
+        set_chat_session_id(chat_id, new_session_id)
+        logger.info("Session updated: %s", new_session_id[:12])
+
+    logger.info("Cursor reply length: %d", len(reply))
+    send_message(token, chat_id, reply, proxy)
 
 
 # ── Main poll loop ──
@@ -96,7 +179,7 @@ def poll_loop():
     token = cfg["bot_token"]
     model = cfg.get("cursor_model", "claude-4.6-opus")
     interval = cfg.get("poll_interval", 3)
-    working_dir = cfg.get("working_dir", ".")
+    default_workspace = cfg.get("working_dir", ".")
     proxy = _parse_proxy(cfg.get("proxy", ""))
     api_key = cfg.get("cursor_api_key", "")
 
@@ -128,15 +211,7 @@ def poll_loop():
                     user = msg.get("from", {}).get("username", "unknown")
                     logger.info("Message from @%s: %s", user, text[:80])
 
-                    if text.startswith("/start"):
-                        send_message(token, chat_id, "Ready. Send me a prompt and I'll forward it to Cursor Agent.", proxy)
-                        continue
-
-                    send_message(token, chat_id, "⏳ Processing with Cursor Agent...", proxy)
-
-                    reply = run_cursor(text, model, working_dir, api_key)
-                    logger.info("Cursor reply length: %d", len(reply))
-                    send_message(token, chat_id, reply, proxy)
+                    handle_command(text, chat_id, token, proxy, model, api_key, default_workspace)
 
         except Exception as e:
             logger.error("Poll loop error: %s", e)
