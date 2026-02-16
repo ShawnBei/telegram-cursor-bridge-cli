@@ -1,3 +1,4 @@
+README.md
 pyproject.toml
 telegram_cursor_bridge/__init__.py
 telegram_cursor_bridge/bridge.py
