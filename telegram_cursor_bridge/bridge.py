@@ -58,7 +58,8 @@ def run_cursor(prompt, model, working_dir, api_key="", session_id=""):
         "agent",
         "-p", "-f", "--trust",
         "--model", model,
-        "--output-format", "json",
+        "--output-format", "stream-json",
+        "--stream-partial-output",
     ]
     if session_id:
         cmd += ["--resume", session_id]
@@ -82,25 +83,49 @@ def run_cursor(prompt, model, working_dir, api_key="", session_id=""):
             env=env,
         )
         stdout = result.stdout.strip()
+        stderr = result.stderr.strip() if result.stderr else ""
+        if stderr:
+            logger.warning("agent stderr (rc=%d): %s", result.returncode, stderr[:500])
+        if result.returncode != 0:
+            logger.error("agent exited with rc=%d", result.returncode)
         if not stdout:
-            stderr = result.stderr.strip() if result.stderr else ""
+            logger.error("agent returned empty stdout (rc=%d)", result.returncode)
             return {"text": f"(empty response, rc={result.returncode})\n{stderr}", "session_id": session_id}
 
-        # parse JSON result
-        try:
-            data = json.loads(stdout)
-            text = data.get("result", stdout)
-            new_session = data.get("session_id", session_id)
-            return {"text": text, "session_id": new_session}
-        except json.JSONDecodeError:
-            return {"text": stdout, "session_id": session_id}
+        return _parse_stream_json(stdout, session_id)
 
     except subprocess.TimeoutExpired:
+        logger.error("agent timed out after 300s (workspace=%s)", working_dir)
         return {"text": "(cursor timed out after 300s)", "session_id": session_id}
     except FileNotFoundError:
+        logger.error("agent CLI not found in PATH")
         return {"text": "(cursor agent CLI not found)", "session_id": session_id}
     except Exception as e:
+        logger.error("agent exception: %s", e, exc_info=True)
         return {"text": f"(cursor error: {e})", "session_id": session_id}
+
+
+def _parse_stream_json(stdout, fallback_session_id):
+    text_parts = []
+    new_session = fallback_session_id
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+            if "session_id" in data:
+                new_session = data["session_id"]
+            if "result" in data:
+                text_parts = [data["result"]]
+            elif "text" in data:
+                text_parts.append(data["text"])
+            elif "content" in data:
+                text_parts.append(data["content"])
+        except json.JSONDecodeError:
+            text_parts.append(line)
+    text = "".join(text_parts) if text_parts else stdout
+    return {"text": text, "session_id": new_session}
 
 
 # ── Bot commands ──
