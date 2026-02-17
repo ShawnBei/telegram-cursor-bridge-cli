@@ -78,7 +78,7 @@ def run_cursor(prompt, model, working_dir, api_key="", session_id=""):
             input=prompt,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=600,
             cwd=working_dir,
             env=env,
         )
@@ -95,8 +95,8 @@ def run_cursor(prompt, model, working_dir, api_key="", session_id=""):
         return _parse_stream_json(stdout, session_id)
 
     except subprocess.TimeoutExpired:
-        logger.error("agent timed out after 300s (workspace=%s)", working_dir)
-        return {"text": "(cursor timed out after 300s)", "session_id": session_id}
+        logger.error("agent timed out after 600s (workspace=%s)", working_dir)
+        return {"text": "(cursor timed out after 600s)", "session_id": session_id}
     except FileNotFoundError:
         logger.error("agent CLI not found in PATH")
         return {"text": "(cursor agent CLI not found)", "session_id": session_id}
